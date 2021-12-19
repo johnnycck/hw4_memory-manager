@@ -1,89 +1,6 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <stdbool.h>
-#include <math.h>
-#define CCHAROFFSET 65
-#define PTBR_TO_INDEX (PTBR/virPage)
-#define PTBR_TO_PROCESS ((PTBR_TO_INDEX) + 65)
-typedef enum
-{
-    LRU,
-    RANDOM
-} TLBPolicy;
+#include "MemManager.h"
 
-typedef enum
-{
-    FIFO,
-    CLOCK
-} PagePolicy;
 
-typedef enum
-{
-    LOCAL,
-    GLOBAL
-} AllocPolicy;
-
-typedef struct
-{
-    bool valid;
-    uint16_t vpn;
-    uint16_t pfn;
-} TLBEntry;
-TLBEntry tlbEntry[32];
-
-typedef struct
-{
-    union
-    {
-        uint8_t byte;
-        struct
-        {
-            uint8_t reference : 1;
-            uint8_t present : 1;
-        } bits;
-    } bitField;
-    int16_t pfn_dbi;
-} PageTableEntry;
-
-typedef struct ReplaceListType
-{
-    uint8_t proc;
-    uint16_t vpn;
-    struct ReplaceListType *prev;
-    struct ReplaceListType *next;
-} ReplaceListType;
-ReplaceListType *curReplaceNode;
-
-typedef struct
-{
-    struct ReplaceListType *head;
-} ReplaceListHeadType;
-ReplaceListHeadType *curLocalReplaceNode;
-
-typedef struct
-{
-    bool frameValid;
-} PhyMem;
-PhyMem *phyMem;
-PhyMem *swapSpace;
-
-typedef struct
-{
-    float tlbHitCnt;
-    float refTlbCnt;
-    float pageFaultCnt;
-    float refPageCnt;
-} StatsType;
-StatsType *stats;
-PageTableEntry *pageTable;
-AllocPolicy allocPolicy;
-TLBPolicy tlbPolicy;
-PagePolicy pagePolicy;
-int phyPage, virPage, numProc;
-uint32_t tlbCounter=0;
-uint32_t tlbLRU[32];
-FILE *ftraceOutput;
 void flushTLB()
 {
     for (int i = 0; i < 32; i++)
@@ -93,7 +10,8 @@ int16_t TLBLookup(uint16_t vpn)
 {
     for (int i = 0; i < 32; i++)
     {
-        if (tlbEntry[i].valid && tlbEntry[i].vpn == vpn) {
+        if (tlbEntry[i].valid && tlbEntry[i].vpn == vpn)
+        {
             if (tlbPolicy == LRU)
                 tlbLRU[i] = tlbCounter++;
             return tlbEntry[i].pfn;
@@ -101,16 +19,20 @@ int16_t TLBLookup(uint16_t vpn)
     }
     return -1;
 }
-int kickTLBEntry() {
-    int i;
-    if (tlbPolicy == RANDOM) {
+int kickTLBEntry()
+{
+    if (tlbPolicy == RANDOM)
+    {
         return rand()%32;
     }
-    else {
+    else
+    {
         unsigned int min=tlbLRU[0];
         int victimTLB=0;
-        for (int i=1; i<32; i++){
-            if (min > tlbLRU[i]) {
+        for (int i=1; i<32; i++)
+        {
+            if (min > tlbLRU[i])
+            {
                 victimTLB = i;
                 min = tlbLRU[i];
             }
@@ -119,17 +41,17 @@ int kickTLBEntry() {
         return victimTLB;
     }
 }
-void fillTLB(uint16_t vpn, int pfn) {
+void fillTLB(uint16_t vpn, int pfn)
+{
     int i;
-    for (i=0; i<32; i++) {
+    for (i=0; i<32; i++)
+    {
         if (!tlbEntry[i].valid)
             break;
     }
     // there is no empty slot for TLB entries
-    if (i == 32) {
+    if (i == 32)
         i = kickTLBEntry();
-        //printf("kick TLB:%d\n", i);
-    }
     if (tlbPolicy == LRU)
         tlbLRU[i] = tlbCounter++;
     tlbEntry[i].vpn = vpn;
@@ -213,56 +135,60 @@ int16_t pageTableLookup(int PTBR, uint16_t vpn)
 {
     if (pageTable[PTBR + vpn].bitField.bits.present)
         return pageTable[PTBR + vpn].pfn_dbi;
-    else 
+    else
         return -1;
 }
-void fillPTE(int PTBR, uint16_t vpn, int pfn) {
+void fillPTE(int PTBR, uint16_t vpn, int pfn)
+{
     ReplaceListType *newNode, *curNode;
-    if (allocPolicy == LOCAL) {
+    if (allocPolicy == LOCAL)
         curNode = curLocalReplaceNode[PTBR_TO_INDEX].head;
-    }
     else
         curNode = curReplaceNode;
-    if (curNode->next != NULL) {
+    if (curNode->next != NULL)
+    {
         newNode = malloc(sizeof(ReplaceListType));
         newNode->vpn = vpn;
         newNode->prev = curNode->prev;
         newNode->next = curNode;
         newNode->proc = PTBR_TO_INDEX;
-        //if (curNode->next == curNode->prev && curNode->next == curNode)
-        //    curNode->next = newNode;
         curNode->prev->next = newNode;
         curNode->prev = newNode;
     }
-    else {
+    else
+    {
         curNode->vpn = vpn;
         curNode->proc = PTBR_TO_INDEX;
         curNode->next = curNode->prev = curNode;
     }
     if (pagePolicy == CLOCK)
         pageTable[PTBR + vpn].bitField.bits.reference = 1;
-    
+
     phyMem[pfn].frameValid = false;
     pageTable[PTBR + vpn].bitField.bits.present = 1;
     pageTable[PTBR + vpn].pfn_dbi = pfn;
 }
-int kickPage(int PTBR, uint16_t refPage){
+int kickPage(int PTBR, uint16_t refPage)
+{
     ReplaceListType *curNode;
     int16_t pfn;
     int i;
     if (allocPolicy == LOCAL)
         curNode = curLocalReplaceNode[PTBR_TO_INDEX].head;
-    else 
+    else
         curNode = curReplaceNode;
-    if (pagePolicy == CLOCK) {
-        while (pageTable[(curNode->proc*virPage)+curNode->vpn].bitField.bits.reference) {
+    if (pagePolicy == CLOCK)
+    {
+        while (pageTable[(curNode->proc*virPage)+curNode->vpn].bitField.bits.reference)
+        {
             pageTable[(curNode->proc*virPage)+curNode->vpn].bitField.bits.reference = 0;
             curNode = curNode->next;
         }
     }
     pfn = pageTable[(curNode->proc*virPage)+curNode->vpn].pfn_dbi;
     // kick to disk
-    for (i=0; i<numProc * virPage; i++) {
+    for (i=0; i<numProc * virPage; i++)
+    {
         if (swapSpace[i].frameValid)
             break;
     }
@@ -277,31 +203,34 @@ int kickPage(int PTBR, uint16_t refPage){
         curLocalReplaceNode[PTBR_TO_INDEX].head = curNode->next;
     else
         curReplaceNode = curNode->next;
-    //printf("%c, %d\n",curNode->proc+65, curNode->vpn);
+
     free(curNode);
     return pageTable[(curNode->proc*virPage)+curNode->vpn].pfn_dbi;
 }
-int freeFrameManager() {
-    for (int i=0; i<phyPage; i++) {
+int freeFrameManager()
+{
+    for (int i=0; i<phyPage; i++)
+    {
         if (phyMem[i].frameValid)
             return i;
     }
     // no free frame
     return -1;
 }
-int16_t pageFaultHandler(int PTBR, uint16_t refPage) {
+int16_t pageFaultHandler(int PTBR, uint16_t refPage)
+{
     int freePfn = -1;
     freePfn = freeFrameManager();
     // there is no free frames
-    if (freePfn == -1) 
+    if (freePfn == -1)
         freePfn = kickPage(PTBR, refPage);
     else
         fprintf(ftraceOutput, "Process %c, TLB Miss, Page Fault, %d, Evict -1 of Process %c to -1, %d<<%d\n",
                 PTBR_TO_PROCESS, freePfn, PTBR_TO_PROCESS, refPage, pageTable[PTBR + refPage].pfn_dbi);
-    
+
     fillPTE(PTBR, refPage, freePfn);
     fillTLB(refPage, freePfn);
-    
+
     return freePfn;
 }
 int16_t addrTrans(int PTBR, uint16_t refPage)
@@ -310,7 +239,8 @@ int16_t addrTrans(int PTBR, uint16_t refPage)
     pfn = TLBLookup(refPage);
     stats[PTBR_TO_INDEX].refTlbCnt++;
     // TLB Hit
-    if (pfn != -1) {
+    if (pfn != -1)
+    {
         stats[PTBR_TO_INDEX].tlbHitCnt++;
         fprintf(ftraceOutput, "Process %c, TLB Hit, %d=>%d\n",PTBR_TO_PROCESS, refPage, pfn);
         if (pagePolicy == CLOCK)
@@ -323,14 +253,16 @@ int16_t addrTrans(int PTBR, uint16_t refPage)
         pfn = pageTableLookup(PTBR, refPage);
         stats[PTBR_TO_INDEX].refPageCnt++;
         // Page hit
-        if (pfn != -1) {
+        if (pfn != -1)
+        {
             fprintf(ftraceOutput, "Process %c, TLB Miss, Page Hit, %d=>%d\n",PTBR_TO_PROCESS, refPage, pfn);
             if (pagePolicy == CLOCK)
                 pageTable[PTBR + refPage].bitField.bits.reference = 1;
             return pfn;
         }
         // page fault
-        else {
+        else
+        {
             stats[PTBR_TO_INDEX].pageFaultCnt++;
             pageFaultHandler(PTBR, refPage);
         }
@@ -370,20 +302,24 @@ int main()
         swapSpace[i].frameValid = true;
     flushTLB();
     // init tlbLRU array
-    if (tlbPolicy == LRU) {
+    if (tlbPolicy == LRU)
+    {
         for (int i=0; i<32; i++)
             tlbLRU[i] = 0;
     }
     // create replacement list
-    if (allocPolicy == LOCAL) {
+    if (allocPolicy == LOCAL)
+    {
         curLocalReplaceNode = malloc(numProc * sizeof(ReplaceListHeadType));
-        for (int i=0; i<numProc; i++) {
+        for (int i=0; i<numProc; i++)
+        {
             curLocalReplaceNode[i].head = malloc(sizeof(ReplaceListType));
             curLocalReplaceNode[i].head->next = curLocalReplaceNode[i].head->prev = NULL;
             curLocalReplaceNode[i].head->proc = i;
         }
     }
-    else {
+    else
+    {
         curReplaceNode = malloc(sizeof(ReplaceListType));
         curReplaceNode->next = curReplaceNode->prev = NULL;
     }
@@ -410,7 +346,8 @@ int main()
     fclose(ftraceOutput);
     fanalysis = fopen("analysis.txt", "w+");
     float hitRatio, formula, pageFaultRate;
-    for (int i=0; i<numProc; i++) {
+    for (int i=0; i<numProc; i++)
+    {
         hitRatio = stats[i].tlbHitCnt/stats[i].refTlbCnt;
         formula = (hitRatio * 120) + (1-hitRatio) * 220;
         pageFaultRate = stats[i].pageFaultCnt/stats[i].refPageCnt;
